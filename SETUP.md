@@ -128,7 +128,7 @@ Duas formas de evitar:
 | Mesmo aviso, mas os secrets estão certos | Projeto pausado (plano grátis, 7 dias) | Painel do Supabase → *Restore project* |
 | `relation "public.income" does not exist` | `supabase_schema.sql` não foi executado | Passo 2 |
 | `permission denied for table ...` | Faltam as permissões do papel de servidor | Rode de novo o bloco *Security* do `supabase_schema.sql` (GRANTs) |
-| `Invalid API key` | Chave copiada incompleta, ou chave *publishable* no lugar da *secret* | Copie a **Secret key** inteira |
+| `Unregistered API key` / `Invalid API key` | URL e chave pertencem a projetos diferentes, chave copiada incompleta, ou chave *publishable* no lugar da *secret* | Em **Project Settings → API Keys**, copie a **Project URL** e a **Secret key** do mesmo projeto; atualize os secrets do Streamlit e reinicie/reimplante o app |
 | Erro de `use_container_width` / `width` | Streamlit antigo | `pip install -U streamlit` (requirements pede `>=1.66`) |
 | Dados "sumiram" depois de um tempo | Projeto novo/diferente nos secrets | Confirme que a URL aponta para o mesmo projeto de antes |
 
