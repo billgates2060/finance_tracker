@@ -1,15 +1,17 @@
 """
 ================================================================================
  PERSONAL FINANCE TRACKER — for International Students in China
- Streamlit + Pandas + Plotly + Google Sheets (database) + fpdf2 (PDF reports)
+ Streamlit + Pandas + Plotly + Supabase (free Postgres) + fpdf2 (PDF reports)
  Multi-language: English / Português / Français / 中文 · Mobile-first design
 ================================================================================
 SETUP REQUIRED BEFORE RUNNING — see SETUP.md:
-    1) Create a Google Cloud service account + enable Sheets & Drive APIs.
-    2) Create a Google Sheet and share it with the service account's email.
-    3) Add your credentials + the Sheet's ID to Streamlit "secrets"
-       (locally: .streamlit/secrets.toml — on Streamlit Cloud: the Secrets
-       panel in your app settings).
+    1) Create a free project at https://supabase.com
+    2) Run `supabase_schema.sql` in Supabase -> SQL Editor (creates 6 tables).
+    3) Put your Project URL + SECRET key in Streamlit "secrets":
+           supabase_url = "https://xxxx.supabase.co"
+           supabase_key = "sb_secret_..."
+       (locally: .streamlit/secrets.toml — on Streamlit Cloud: app Settings ->
+       Secrets). NEVER commit this key or put it in client-side code.
 
 HOW TO RUN LOCALLY:
     pip install -r requirements.txt
@@ -19,9 +21,7 @@ HOW TO RUN LOCALLY:
 
 import datetime
 
-import gspread
-from gspread.utils import rowcol_to_a1
-from google.oauth2.service_account import Credentials
+from supabase import create_client
 
 import pandas as pd
 import plotly.express as px
@@ -41,12 +41,7 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-SHEET_SCHEMAS = {
+TABLE_SCHEMAS = {
     "income":   ["id", "date", "source", "amount_rmb", "notes"],
     "expenses": ["id", "date", "category", "description", "amount_rmb", "payment_method"],
     "budgets":  ["category", "limit_rmb"],
@@ -143,9 +138,9 @@ STRINGS = {
     "export_header": {"en": "📤 Export Data", "pt": "📤 Exportar Dados", "fr": "📤 Exporter les données", "zh": "📤 导出数据"},
     "income_csv": {"en": "Income CSV", "pt": "CSV de Receitas", "fr": "CSV Revenus", "zh": "收入 CSV"},
     "expenses_csv": {"en": "Expenses CSV", "pt": "CSV de Despesas", "fr": "CSV Dépenses", "zh": "支出 CSV"},
-    "open_sheet": {"en": "📄 Open the raw Google Sheet", "pt": "📄 Abrir a planilha do Google", "fr": "📄 Ouvrir la feuille Google", "zh": "📄 打开 Google 表格"},
+    "open_sheet": {"en": "📄 Open Supabase Dashboard", "pt": "📄 Abrir Painel do Supabase", "fr": "📄 Ouvrir le Tableau Supabase", "zh": "📄 打开 Supabase 控制台"},
     "tip": {"en": "💡 Tip: enter all amounts in RMB (¥). The app converts to XOF automatically.", "pt": "💡 Dica: digite todos os valores em RMB (¥). O app converte para XOF automaticamente.", "fr": "💡 Astuce : saisissez les montants en RMB (¥). L'app convertit en XOF automatiquement.", "zh": "💡 提示：请以人民币（¥）输入金额，系统会自动换算为西非法郎。"},
-    "footer": {"en": "Made for students studying abroad 🎓 · Data stored in Google Sheets", "pt": "Feito para estudantes no exterior 🎓 · Dados salvos no Google Sheets", "fr": "Conçu pour les étudiants à l'étranger 🎓 · Données sur Google Sheets", "zh": "为留学生打造 🎓 · 数据保存在 Google 表格"},
+    "footer": {"en": "Made for students studying abroad 🎓 · Data stored in Supabase", "pt": "Feito para estudantes no exterior 🎓 · Dados salvos no Supabase", "fr": "Conçu pour les étudiants à l'étranger 🎓 · Données sur Supabase", "zh": "为留学生打造 🎓 · 数据保存在 Supabase"},
     "greet_morning": {"en": "Good morning ☀️", "pt": "Bom dia ☀️", "fr": "Bonjour ☀️", "zh": "早上好 ☀️"},
     "greet_afternoon": {"en": "Good afternoon 🌤️", "pt": "Boa tarde 🌤️", "fr": "Bon après-midi 🌤️", "zh": "下午好 🌤️"},
     "greet_evening": {"en": "Good evening 🌙", "pt": "Boa noite 🌙", "fr": "Bonsoir 🌙", "zh": "晚上好 🌙"},
@@ -272,77 +267,71 @@ def tr_option(canonical, table, lang_code):
 
 
 # ==============================================================================
-# 2. GOOGLE SHEETS CONNECTION LAYER
+# 2. SUPABASE CONNECTION LAYER
 # ==============================================================================
-@st.cache_resource(show_spinner="Connecting to Google Sheets...")
-def get_client():
-    info = dict(st.secrets["gcp_service_account"])
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    return gspread.authorize(creds)
+@st.cache_resource(show_spinner="Connecting to Supabase...")
+def get_supabase():
+    """One client per server process. Uses the SECRET key (server-side only),
+    which bypasses Row Level Security — so it must live only in Streamlit
+    secrets, never in the repo or in browser code."""
+    return create_client(st.secrets["supabase_url"], st.secrets["supabase_key"])
 
 
-@st.cache_resource(show_spinner=False)
-def get_spreadsheet():
-    return get_client().open_by_key(st.secrets["spreadsheet_id"])
-
-
-def get_ws(name):
-    ss = get_spreadsheet()
+def supabase_dashboard_url():
     try:
-        return ss.worksheet(name)
-    except gspread.WorksheetNotFound:
-        ws = ss.add_worksheet(title=name, rows=500, cols=max(len(SHEET_SCHEMAS[name]), 6))
-        ws.append_row(SHEET_SCHEMAS[name])
-        return ws
+        ref = st.secrets["supabase_url"].split("//")[1].split(".")[0]
+        return f"https://supabase.com/dashboard/project/{ref}/editor"
+    except Exception:
+        return None
 
 
-@st.cache_data(ttl=60)
-def fetch_df(name):
-    ws = get_ws(name)
-    records = ws.get_all_records()
-    cols = SHEET_SCHEMAS[name]
-    df = pd.DataFrame(records) if records else pd.DataFrame(columns=cols)
+def _py(v):
+    """Convert numpy scalars to native Python so they are JSON-serialisable."""
+    return v.item() if hasattr(v, "item") else v
+
+
+def fetch_df(table):
+    """Read a whole table (paginated, so >1000 rows still work) into a typed
+    DataFrame with a stable column order."""
+    sb = get_supabase()
+    cols = TABLE_SCHEMAS[table]
+    order_col = "id" if "id" in cols else cols[0]
+    rows, start, page = [], 0, 1000
+    while True:
+        res = sb.table(table).select("*").order(order_col).range(start, start + page - 1).execute()
+        batch = res.data or []
+        rows.extend(batch)
+        if len(batch) < page:
+            break
+        start += page
+
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
     for c in cols:
         if c not in df.columns:
             df[c] = None
     df = df[cols]
-    for c in NUMERIC_COLUMNS.get(name, []):
+    for c in NUMERIC_COLUMNS.get(table, []):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     if "id" in df.columns and not df.empty:
         df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
     return df
 
 
-def append_row(name, row_values):
-    get_ws(name).append_row(row_values, value_input_option="USER_ENTERED")
+def insert_row(table, data: dict):
+    """Insert one row. Postgres generates `id` automatically."""
+    get_supabase().table(table).insert({k: _py(v) for k, v in data.items()}).execute()
 
 
-def update_full_row(name, row_idx, row_values):
-    ws = get_ws(name)
-    start, end = rowcol_to_a1(row_idx, 1), rowcol_to_a1(row_idx, len(row_values))
-    ws.update(values=[row_values], range_name=f"{start}:{end}", value_input_option="USER_ENTERED")
+def update_row(table, id_value, data: dict, id_col="id"):
+    get_supabase().table(table).update({k: _py(v) for k, v in data.items()}).eq(id_col, _py(id_value)).execute()
 
 
-def find_row_by_value(name, col_idx, value):
-    ws = get_ws(name)
-    try:
-        cell = ws.find(str(value), in_column=col_idx)
-    except gspread.exceptions.CellNotFound:
-        return None
-    return cell.row if cell else None
+def delete_row(table, id_value, id_col="id"):
+    get_supabase().table(table).delete().eq(id_col, _py(id_value)).execute()
 
 
-def delete_row_by_id(name, id_value, id_col_idx=1):
-    row_idx = find_row_by_value(name, id_col_idx, id_value)
-    if row_idx:
-        get_ws(name).delete_rows(row_idx)
-
-
-def next_id(name):
-    df = fetch_df(name)
-    if df.empty or "id" not in df.columns:
-        return 1
-    return int(df["id"].max()) + 1
+def upsert_row(table, data: dict, conflict_col: str):
+    get_supabase().table(table).upsert({k: _py(v) for k, v in data.items()}, on_conflict=conflict_col).execute()
 
 
 def get_setting(key, default=None):
@@ -352,9 +341,8 @@ def get_setting(key, default=None):
 
 
 def get_float_setting(key, default):
-    """Robust numeric read: falls back to `default` if the cell is missing,
-    blank, or contains something that isn't a number (defensive against a
-    manually-edited sheet or a partially-seeded row)."""
+    """Robust numeric read: falls back to `default` if the value is missing,
+    blank, or not a number."""
     val = get_setting(key, default)
     try:
         return float(val)
@@ -363,18 +351,12 @@ def get_float_setting(key, default):
 
 
 def set_setting(key, value):
-    row_idx = find_row_by_value("settings", 1, key)
-    if row_idx:
-        update_full_row("settings", row_idx, [key, str(value)])
-    else:
-        append_row("settings", [key, str(value)])
+    upsert_row("settings", {"key": key, "value": str(value)}, "key")
 
 
-def ensure_workbook_ready():
-    """Create any missing worksheets + seed sensible defaults, once."""
-    for name in SHEET_SCHEMAS:
-        get_ws(name)  # touching it creates it with headers if missing
-
+def ensure_database_ready():
+    """Seed sensible defaults once. The tables themselves must already exist —
+    run supabase_schema.sql in the Supabase SQL Editor first."""
     if get_setting("initialized") != "true":
         set_setting("exchange_rate", 85)
         set_setting("savings_goal_monthly", 500)
@@ -385,31 +367,35 @@ def ensure_workbook_ready():
         existing_cats = set(budgets_df["category"]) if not budgets_df.empty else set()
         for cat in EXPENSE_CATEGORIES:
             if cat not in existing_cats:
-                append_row("budgets", [cat, 0])
+                insert_row("budgets", {"category": cat, "limit_rmb": 0})
 
         if fetch_df("bills").empty:
             base = datetime.date.today()
-            for i, (bname, amt, day) in enumerate([
+            for bname, amt, day in [
                 ("Dormitory Fee", 3000, 5), ("Health Insurance", 800, 1),
                 ("Phone Plan (SIM)", 50, 10), ("Internet / Dorm WiFi", 30, 10),
-            ], start=1):
-                append_row("bills", [i, bname, amt, str(base.replace(day=day)), "Pending", ""])
+            ]:
+                insert_row("bills", {
+                    "bill_name": bname, "amount_rmb": amt,
+                    "due_date": str(base.replace(day=day)),
+                    "status": "Pending", "date_paid": None,
+                })
 
         set_setting("initialized", "true")
 
 
-# Run the readiness check only once per browser session (not on every single
-# widget interaction / rerun) — this avoids unnecessary Google Sheets API
-# calls and reduces the risk of hitting the free quota during normal use.
+# Run the readiness check only once per browser session (not on every widget
+# interaction) to avoid needless database round-trips.
 if "workbook_ready" not in st.session_state:
     try:
-        ensure_workbook_ready()
+        ensure_database_ready()
         st.session_state.workbook_ready = True
     except Exception as e:
         st.error(
-            "⚠️ Could not connect to Google Sheets. Double-check your `secrets.toml` "
-            "(service account credentials + `spreadsheet_id`) and that the sheet is "
-            "shared with the service account's email — see SETUP.md."
+            "⚠️ Could not connect to Supabase. Check `supabase_url` / `supabase_key` in "
+            "your secrets, and that you ran `supabase_schema.sql`. On the free plan, a "
+            "project idle for 7 days is paused — restore it in the Supabase dashboard "
+            "(your data is kept). See SETUP.md."
         )
         st.exception(e)
         st.stop()
@@ -618,7 +604,7 @@ with st.sidebar.expander(t("settings_header"), expanded=False):
         st.rerun()
 
     new_rate = st.number_input(t("rate_label"), min_value=1.0, value=float(RATE), step=0.5)
-    if st.button(t("rate_btn"), use_container_width=True):
+    if st.button(t("rate_btn"), width="stretch"):
         st.session_state.exchange_rate = new_rate
         set_setting("exchange_rate", new_rate)
         st.success(t("rate_updated", rate=new_rate))
@@ -626,7 +612,7 @@ with st.sidebar.expander(t("settings_header"), expanded=False):
 
     monthly_goal = st.number_input(t("goal_label"), min_value=0.0,
                                     value=get_float_setting("savings_goal_monthly", 500), step=50.0)
-    if st.button(t("goal_btn"), use_container_width=True):
+    if st.button(t("goal_btn"), width="stretch"):
         set_setting("savings_goal_monthly", monthly_goal)
         st.success(t("goal_updated"))
         st.rerun()
@@ -637,13 +623,15 @@ with st.sidebar.expander(t("settings_header"), expanded=False):
     col_a, col_b = st.columns(2)
     with col_a:
         st.download_button(t("income_csv"), income_df_export.to_csv(index=False).encode("utf-8"),
-                            "income_export.csv", "text/csv", use_container_width=True)
+                            "income_export.csv", "text/csv", width="stretch")
     with col_b:
         st.download_button(t("expenses_csv"), expenses_df_export.to_csv(index=False).encode("utf-8"),
-                            "expenses_export.csv", "text/csv", use_container_width=True)
+                            "expenses_export.csv", "text/csv", width="stretch")
 
-    st.markdown("---")
-    st.markdown(f"[{t('open_sheet')}]({get_spreadsheet().url})")
+    dash_url = supabase_dashboard_url()
+    if dash_url:
+        st.markdown("---")
+        st.markdown(f"[{t('open_sheet')}]({dash_url})")
 
 st.sidebar.markdown("---")
 st.sidebar.info(t("tip"))
@@ -725,7 +713,7 @@ if page_key == "dashboard":
             fig_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10),
                                    legend=dict(orientation="h", yanchor="bottom", y=-0.3),
                                    paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
         else:
             st.info(t("no_expenses_month"))
 
@@ -739,7 +727,7 @@ if page_key == "dashboard":
             fig_line.update_traces(line_color="#2563eb", fill="tozeroy", fillcolor="rgba(37,99,235,0.1)")
             fig_line.update_layout(margin=dict(t=10, b=10, l=10, r=10),
                                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig_line, use_container_width=True)
+            st.plotly_chart(fig_line, width="stretch")
         else:
             st.info(t("no_daily_data"))
 
@@ -759,11 +747,11 @@ elif page_key == "income":
             with fc2:
                 i_amount = st.number_input(t("amount_label"), min_value=0.0, step=10.0)
                 i_notes = st.text_input(t("notes_label"))
-            if st.form_submit_button(t("save_income"), use_container_width=True):
+            if st.form_submit_button(t("save_income"), width="stretch"):
                 if i_amount <= 0:
                     st.error(t("amount_error"))
                 else:
-                    append_row("income", [next_id("income"), str(i_date), i_source, i_amount, i_notes])
+                    insert_row("income", {"date": str(i_date), "source": i_source, "amount_rmb": i_amount, "notes": i_notes})
                     st.success(t("income_added", amount=fmt_rmb(i_amount), source=tr_option(i_source, SOURCE_TR, lang)))
                     st.rerun()
 
@@ -777,7 +765,7 @@ elif page_key == "income":
         display_df["XOF"] = (display_df["amount_rmb"] * RATE).round(0)
         display_df = display_df.rename(columns={"amount_rmb": t("amount_label"), "date": t("date_label"), "notes": t("notes_label")})
         st.dataframe(display_df[["id", t("date_label"), "Source", t("amount_label"), "XOF", t("notes_label")]],
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
         # Delete picker shows date · source · amount instead of a bare ID
         # number, so it's usable on a phone without scrolling back up to the
@@ -790,8 +778,8 @@ elif page_key == "income":
 
         del_id = st.selectbox(t("select_delete_entry"), options=[None] + income_df["id"].tolist(),
                                format_func=income_entry_label)
-        if del_id and st.button(t("delete_income_btn"), use_container_width=True):
-            delete_row_by_id("income", del_id)
+        if del_id and st.button(t("delete_income_btn"), width="stretch"):
+            delete_row("income", del_id)
             st.success(t("entry_deleted"))
             st.rerun()
 
@@ -813,11 +801,12 @@ elif page_key == "expenses":
             with fc2:
                 e_amount = st.number_input(t("amount_label"), min_value=0.0, step=5.0, key="e_amount")
                 e_desc = st.text_input(t("description_label"))
-            if st.form_submit_button(t("save_expense"), use_container_width=True):
+            if st.form_submit_button(t("save_expense"), width="stretch"):
                 if e_amount <= 0:
                     st.error(t("amount_error"))
                 else:
-                    append_row("expenses", [next_id("expenses"), str(e_date), e_category, e_desc, e_amount, e_payment])
+                    insert_row("expenses", {"date": str(e_date), "category": e_category, "description": e_desc,
+                                             "amount_rmb": e_amount, "payment_method": e_payment})
                     st.success(t("expense_added", amount=fmt_rmb(e_amount), category=tr_option(e_category, CATEGORY_TR, lang)))
                     st.rerun()
 
@@ -833,7 +822,7 @@ elif page_key == "expenses":
         display_df = display_df.rename(columns={"amount_rmb": t("amount_label"), "date": t("date_label"), "description": t("description_label")})
         st.dataframe(
             display_df[["id", t("date_label"), "Category", t("description_label"), t("amount_label"), "XOF", "Payment"]],
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
         st.markdown(f"#### {t('edit_delete_header')}")
@@ -860,18 +849,19 @@ elif page_key == "expenses":
                                             format_func=lambda x: tr_option(x, PAYMENT_TR, lang))
                 with ec2:
                     new_amount = st.number_input(t("amount_label"), min_value=0.0, value=float(row["amount_rmb"]))
-                    new_desc = st.text_input(t("description_label"), value=row["description"] or "")
+                    new_desc = st.text_input(t("description_label"), value=row["description"] if isinstance(row["description"], str) else "")
 
                 col_upd, col_del = st.columns(2)
                 with col_upd:
-                    if st.form_submit_button(t("update_entry"), use_container_width=True):
-                        row_idx = find_row_by_value("expenses", 1, edit_id)
-                        update_full_row("expenses", row_idx, [edit_id, str(new_date), new_cat, new_desc, new_amount, new_pay])
+                    if st.form_submit_button(t("update_entry"), width="stretch"):
+                        update_row("expenses", edit_id, {"date": str(new_date), "category": new_cat,
+                                                          "description": new_desc, "amount_rmb": new_amount,
+                                                          "payment_method": new_pay})
                         st.success(t("entry_updated"))
                         st.rerun()
                 with col_del:
-                    if st.form_submit_button(t("delete_entry"), use_container_width=True):
-                        delete_row_by_id("expenses", edit_id)
+                    if st.form_submit_button(t("delete_entry"), width="stretch"):
+                        delete_row("expenses", edit_id)
                         st.success(t("entry_deleted"))
                         st.rerun()
 
@@ -895,13 +885,9 @@ elif page_key == "budget":
                         f"{tr_option(cat, CATEGORY_TR, lang)} {t('limit_suffix')}",
                         min_value=0.0, value=current_limit, step=50.0, key=f"budget_{cat}",
                     )
-            if st.form_submit_button(t("save_budgets"), use_container_width=True):
+            if st.form_submit_button(t("save_budgets"), width="stretch"):
                 for cat, amt in budget_inputs.items():
-                    row_idx = find_row_by_value("budgets", 1, cat)
-                    if row_idx:
-                        update_full_row("budgets", row_idx, [cat, amt])
-                    else:
-                        append_row("budgets", [cat, amt])
+                    upsert_row("budgets", {"category": cat, "limit_rmb": amt}, "category")
                 st.success(t("budgets_updated"))
                 st.rerun()
 
@@ -945,14 +931,14 @@ elif page_key == "bills":
             b_paid_date = None
             if b_status == "Paid":
                 b_paid_date = st.date_input(t("date_paid_label"), value=today, key="paid_date_new")
-            if st.form_submit_button(t("save_bill"), use_container_width=True):
+            if st.form_submit_button(t("save_bill"), width="stretch"):
                 if not b_name or b_amount <= 0:
                     st.error(t("bill_error"))
                 else:
-                    append_row("bills", [
-                        next_id("bills"), b_name, b_amount, str(b_due), b_status,
-                        str(b_paid_date) if b_paid_date else "",
-                    ])
+                    insert_row("bills", {
+                        "bill_name": b_name, "amount_rmb": b_amount, "due_date": str(b_due),
+                        "status": b_status, "date_paid": str(b_paid_date) if b_paid_date else None,
+                    })
                     st.success(t("bill_added", name=b_name))
                     st.rerun()
 
@@ -986,16 +972,14 @@ elif page_key == "bills":
                         key=f"status_{row['id']}", label_visibility="collapsed",
                     )
                 with bcol2:
-                    delete_clicked = st.button("🗑️", key=f"del_bill_{row['id']}", use_container_width=True)
+                    delete_clicked = st.button("🗑️", key=f"del_bill_{row['id']}", width="stretch")
 
                 if new_status != row["status"]:
-                    paid_date = str(today) if new_status == "Paid" else ""
-                    row_idx = find_row_by_value("bills", 1, row["id"])
-                    update_full_row("bills", row_idx,
-                                     [row["id"], row["bill_name"], row["amount_rmb"], row["due_date"], new_status, paid_date])
+                    paid_date = str(today) if new_status == "Paid" else None
+                    update_row("bills", row["id"], {"status": new_status, "date_paid": paid_date})
                     st.rerun()
                 if delete_clicked:
-                    delete_row_by_id("bills", row["id"])
+                    delete_row("bills", row["id"])
                     st.rerun()
 
         total_pending = bills_df.loc[bills_df["status"] == "Pending", "amount_rmb"].sum()
@@ -1017,11 +1001,12 @@ elif page_key == "goals":
             with gc2:
                 g_current = st.number_input(t("current_saved_label"), min_value=0.0, step=10.0)
                 g_deadline = st.date_input(t("deadline_label"), value=today + datetime.timedelta(days=90))
-            if st.form_submit_button(t("save_goal"), use_container_width=True):
+            if st.form_submit_button(t("save_goal"), width="stretch"):
                 if not g_name or g_target <= 0:
                     st.error(t("goal_error"))
                 else:
-                    append_row("goals", [next_id("goals"), g_name, g_target, g_current, str(g_deadline)])
+                    insert_row("goals", {"goal_name": g_name, "target_amount": g_target,
+                                          "current_amount": g_current, "deadline": str(g_deadline)})
                     st.success(t("goal_added", name=g_name))
                     st.rerun()
 
@@ -1056,14 +1041,13 @@ elif page_key == "goals":
                 add_amt = st.number_input(t("add_savings_label"), min_value=0.0, step=10.0, key=f"add_{row['id']}")
                 cbtn1, cbtn2 = st.columns(2)
                 with cbtn1:
-                    if st.button(t("update_btn"), key=f"upd_goal_{row['id']}", use_container_width=True):
+                    if st.button(t("update_btn"), key=f"upd_goal_{row['id']}", width="stretch"):
                         new_amt = row["current_amount"] + add_amt
-                        row_idx = find_row_by_value("goals", 1, row["id"])
-                        update_full_row("goals", row_idx, [row["id"], row["goal_name"], row["target_amount"], new_amt, row["deadline"]])
+                        update_row("goals", row["id"], {"current_amount": new_amt})
                         st.rerun()
                 with cbtn2:
-                    if st.button(t("delete_goal_btn"), key=f"del_goal_{row['id']}", use_container_width=True):
-                        delete_row_by_id("goals", row["id"])
+                    if st.button(t("delete_goal_btn"), key=f"del_goal_{row['id']}", width="stretch"):
+                        delete_row("goals", row["id"])
                         st.rerun()
                 st.write("")
 
@@ -1117,7 +1101,7 @@ elif page_key == "reports":
         fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor="rgba(0,0,0,0)",
                            plot_bgcolor="rgba(0,0,0,0)", coloraxis_showscale=False,
                            yaxis_title=t("amount_label"), xaxis_title="")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         st.markdown(f"#### {t('report_top_expenses')}")
         top_exp = p_expenses.sort_values("amount_rmb", ascending=False).head(5).copy()
@@ -1125,7 +1109,7 @@ elif page_key == "reports":
         top_exp["date"] = top_exp["date"].dt.strftime("%Y-%m-%d")
         top_exp = top_exp.rename(columns={"date": t("date_label"), "description": t("description_label"), "amount_rmb": t("amount_label")})
         st.dataframe(top_exp[[t("date_label"), "Category", t("description_label"), t("amount_label")]],
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
 
     st.markdown(f"#### {t('report_budget_status')}")
     over_list, within_list = [], []
@@ -1166,10 +1150,10 @@ elif page_key == "reports":
         pdf.set_text_color(255, 255, 255)
         pdf.set_xy(10, 6)
         pdf.set_font("Helvetica", "B", 17)
-        pdf.cell(0, 10, pdf_safe("Personal Finance Report"), ln=True)
+        pdf.cell(0, 10, pdf_safe("Personal Finance Report"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_xy(10, 16)
         pdf.set_font("Helvetica", "", 11)
-        pdf.cell(0, 8, pdf_safe(f"{month_name(sel_month, 'en')} {sel_year}"), ln=True)
+        pdf.cell(0, 8, pdf_safe(f"{month_name(sel_month, 'en')} {sel_year}"), new_x="LMARGIN", new_y="NEXT")
 
         pdf.set_y(34)
         pdf.set_text_color(20, 20, 20)
@@ -1178,7 +1162,7 @@ elif page_key == "reports":
             pdf.ln(4)
             pdf.set_font("Helvetica", "B", 13)
             pdf.set_text_color(37, 99, 235)
-            pdf.cell(0, 9, pdf_safe(txt), ln=True)
+            pdf.cell(0, 9, pdf_safe(txt), new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(20, 20, 20)
             pdf.set_font("Helvetica", "", 10.5)
 
@@ -1186,7 +1170,7 @@ elif page_key == "reports":
             pdf.set_font("Helvetica", "", 11)
             pdf.cell(90, 8, pdf_safe(label))
             pdf.set_font("Helvetica", "B", 11)
-            pdf.cell(0, 8, pdf_safe(value), ln=True)
+            pdf.cell(0, 8, pdf_safe(value), new_x="LMARGIN", new_y="NEXT")
 
         section_title("Summary")
         kv_row("Total Income", f"RMB {p_income_total:,.2f}  (~{rmb_to_xof(p_income_total):,.0f} XOF)")
@@ -1223,14 +1207,14 @@ elif page_key == "reports":
         pdf.ln(10)
         pdf.set_font("Helvetica", "I", 8)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(0, 8, pdf_safe(f"Generated on {datetime.date.today().isoformat()} · 1 RMB = {RATE} XOF"), ln=True)
+        pdf.cell(0, 8, pdf_safe(f"Generated on {datetime.date.today().isoformat()} · 1 RMB = {RATE} XOF"), new_x="LMARGIN", new_y="NEXT")
 
         return bytes(pdf.output())
 
     pdf_bytes = build_pdf()
     st.download_button(t("download_pdf"), data=pdf_bytes,
                         file_name=f"finance_report_{sel_year}_{sel_month:02d}.pdf",
-                        mime="application/pdf", use_container_width=True)
+                        mime="application/pdf", width="stretch")
     if lang == "zh":
         st.caption(t("pdf_zh_note"))
 

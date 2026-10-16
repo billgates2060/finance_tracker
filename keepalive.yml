@@ -1,0 +1,22 @@
+# Place this file at:  .github/workflows/keepalive.yml  in your GitHub repo.
+# Pings your Supabase project every 3 days so the FREE plan does not pause it
+# after 7 days of inactivity. Needs two repository secrets
+# (GitHub -> Settings -> Secrets and variables -> Actions):
+#   SUPABASE_URL              e.g. https://abcdefgh.supabase.co
+#   SUPABASE_PUBLISHABLE_KEY  the sb_publishable_... key (NOT the secret key)
+name: Supabase keepalive
+
+on:
+  schedule:
+    - cron: "0 6 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        run: |
+          curl -fsS "${{ secrets.SUPABASE_URL }}/rest/v1/settings?select=key&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}" \
+            -o /dev/null -w "HTTP %{http_code}\n"

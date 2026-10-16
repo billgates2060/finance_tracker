@@ -1,6 +1,5 @@
-streamlit
+streamlit>=1.66
 pandas
 plotly
-gspread
-google-auth
+supabase
 fpdf2
